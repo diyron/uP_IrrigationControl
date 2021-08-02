@@ -1,236 +1,177 @@
-##########################
-# irrigation-controller - offline version
-# by André Lange
-#
-##########################
 
+import tinyweb
+import network
+import time
 from machine import Pin, I2C, Timer
-import utime
-import ssd1306
-import micropython
+from sh1106 import SH1106_I2C
 
 i2c = I2C(scl=Pin(22), sda=Pin(21))
-oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+oled = SH1106_I2C(128, 64, i2c)
 onbled = Pin(2, Pin.OUT)  # onboard led (blue)
 onbled.on()  # on
 
-icon = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 1, 1, 0, 0, 0, 1, 1, 0],
-    [1, 1, 1, 1, 0, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [0, 1, 1, 1, 1, 1, 1, 1, 0],
-    [0, 0, 1, 1, 1, 1, 1, 0, 0],
-    [0, 0, 0, 1, 1, 1, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0],
-]
 oled.fill(0)  # Clear the display
-for y, row in enumerate(icon):
-
-    for x, c in enumerate(row):
-        oled.pixel(x + 93, y + 23, c)
-
-oled.text('IoT with ', 20, 25)
+oled.text('REST Test ', 20, 25)
 oled.text('Irrigation', 20, 40)
 oled.show()
 
-utime.sleep(2)  # 2s
-onbled.off()  # off
-
 #######################################################
+wlan = None
+SSID = "Cookie"
+PASSWORD = "An35fP89htDw"
 
-v1_pin = Pin(15, Pin.OUT)
-v1_pin.value(1)  # close
-t_v1 = 720
-text_v1 = "LINKS   zu"
+class RestControl:
 
-v2_pin = Pin(4, Pin.OUT)
-v2_pin.value(1)  # close
-t_v2 = 720
-text_v2 = "MITTE   zu"
+    t_li = 0
+    t_mi = 0
+    t_re = 0
+    t_st = 0
+    run = False
+    s = 0
+    tick_timer = Timer(0)
 
-v3_pin = Pin(5, Pin.OUT)
-v3_pin.value(1)  # close
-t_v3 = 720
-text_v3 = "RECHTS  zu"
+    valve_li = Pin(25, Pin.OUT)
+    valve_mi = Pin(26, Pin.OUT)
+    valve_re = Pin(27, Pin.OUT)
+    valve_st = Pin(14, Pin.OUT)
 
-t_wait = 15
-run = False
-i = 0
-t_next = 0
-sel_i = 0
-status = "stop"
+    def stop(self):
+        self.valve_li.value(0)
+        self.valve_mi.value(0)
+        self.valve_re.value(0)
+        self.valve_st.value(0)
+        self.tick_timer.deinit()
+        self.s = 0
+        self.run = False
 
-
-def update_display(*args):
-    global oled, run
-    oled.fill(0)
-
-    if not run:
-        if sel_i == 1:
-            oled.text("<", 120, 20)
-        if sel_i == 2:
-            oled.text("<", 120, 35)
-        if sel_i == 3:
-            oled.text("<", 120, 50)
-    # update display
-    oled.text(status, 0, 0)
-    oled.text(str(t_next - i), 85, 0)
-    oled.hline(0, 13, 127, 1)
-    oled.text(text_v1, 0, 20)
-    oled.text(str(t_v1), 85, 20)
-    oled.text(text_v2, 0, 35)
-    oled.text(str(t_v2), 85, 35)
-    oled.text(text_v3, 0, 50)
-    oled.text(str(t_v3), 85, 50)
-    oled.show()
+        oled.fill(0)  # Clear the display
+        oled.text("stop", 20, 25)
+        oled.show()
 
 
-update_display()
+    def start(self ,range):
+        print("sek ", str(self.s))
+        print("range", range)
+        self.run = True
+        tmp = ""
 
-#######################################################
-# button RUN / STOP
-timer_run = Timer(1)  # Register a new hardware timer.
+        oled.fill(0)  # Clear the display
+        oled.text(str(self.s), 20, 25)
+        oled.text(range, 20, 35)
 
+        if self.s == 0:
+            if range == "bed":
+                self.valve_st(1)
+                tmp = "ST"
+            else:
+                self.valve_li(1)
+                tmp = "LI"
 
-def runstop(t):
-    global run, status, i, t_next, sel_i, button
+        if self.s == self.t_li:
+            if range == "bed":
+                self.stop()
+            else:
+                self.valve_li(0)
+                self.valve_mi(1)
+                tmp = "MI"
 
-    if not button.value():
-        run = not run
-        print("run button", run)
-        if run:
-            status = "run"
+        if self.s == self.t_li + self.t_mi:
+            self.valve_mi(0)
+            self.valve_re(1)
+
+            tmp = "RE"
+
+        if self.s == self.t_li + self.t_mi + self.t_re:
+            if range == "all":
+                self.valve_re(0)
+                self.valve_st(1)
+                tmp = "ST"
+            else:
+                self.stop()
+
+        if self.s == self.t_li + self.t_mi + self.t_re + self.t_st:
+            self.stop()
+
+        oled.text(tmp, 20, 45)
+        oled.show()
+
+        self.s += 1
+
+    def get(self, data):
+        print('get: ', data)
+
+        if onbled.value() == 1:
+            onbled.off()
+
+            tmp = "off"
         else:
-            status = "stop"
-            i = 0
-            t_next = 0
-            sel_i = 0
-        micropython.schedule(update_display, 0)
-    button.irq(handler=run_debounce)
+            onbled.on()
+            tmp = "on"
+
+        oled.fill(0)  # Clear the display
+        oled.text(tmp, 20, 25)
+        oled.show()
+
+        if "t_li" in data:
+            self.t_li = int(data["t_li"])
+
+        if "t_mi" in data:
+            self.t_mi = int(data["t_mi"])
+
+        if "t_re" in data:
+            self.t_re = int(data["t_re"])
+
+        if "t_st" in data:
+            self.t_st = int(data["t_st"])
+
+        if "seq" in data:
+            if data["seq"] == "stop":
+                self.stop()
+
+            if (data["seq"] == "all" or data["seq"] == "bed" or data["seq"] == "green") and not self.run:
+                self.tick_timer.init(period=1000, mode=Timer.PERIODIC, callback=lambda t: self.start(data["seq"]))
+
+        print("t_li", self.t_li)
+        print("t_mi", self.t_mi)
+        print("t_re", self.t_re)
+        print("t_st", self.t_st)
+
+        return {'message': "get_success"}
 
 
-def run_debounce(pin):
-    global timer_run, button
-
-    print("run - debounce")
-    button.irq(handler=None)
-    timer_run.init(mode=Timer.ONE_SHOT, period=100, callback=runstop)
+######################################################################
 
 
-button = Pin(16, Pin.IN, Pin.PULL_UP)  # run / stop
-button.irq(trigger=Pin.IRQ_FALLING, handler=run_debounce)
-#######################################################
-# button SELECT
-timer_sel = Timer(2)  # Register a new hardware timer.
+def rest_server_start():
+    # Create web server application
+    app = tinyweb.webserver()
+    # Add our resources
+    app.add_resource(RestControl, '/irrigation')
+    app.run(host='0.0.0.0', port=8081)
 
 
-def select(t):
-    global sel_i, run, btn_sel
-
-    if not btn_sel.value() and not run:
-        print("sel button")
-        sel_i = (sel_i + 1) % 4
-        micropython.schedule(update_display, 0)
-    btn_sel.irq(handler=sel_debounce)
-
-
-def sel_debounce(pin):
-    global btn_sel, timer_sel
-    print("sel - debounce")
-    btn_sel.irq(handler=None)
-    timer_sel.init(mode=Timer.ONE_SHOT, period=100, callback=select)
+def connect_wifi(ssid, passwd):
+    global wlan
+    wlan = network.WLAN(network.STA_IF)  # create a wlan object
+    wlan.active(True)  # Activate the network interface
+    wlan.disconnect()  # Disconnect the last connected WiFi
+    wlan.connect(ssid, passwd)  # connect wifi
+    while wlan.ifconfig()[0] == '0.0.0.0':
+        time.sleep(1)
 
 
-btn_sel = Pin(17, Pin.IN, Pin.PULL_UP)
-btn_sel.irq(trigger=Pin.IRQ_FALLING, handler=sel_debounce)
-#######################################################
-# button UP
-timer_up = Timer(3)  # Register a new hardware timer.
+print("conneting to wifi...")
+
+try:
+    connect_wifi(SSID, PASSWORD)
+    onbled.off()
+    print("ready")
+    print("starting REST-Webserver...")
+    rest_server_start()
+
+except Exception as e:
+    print(e)
+    wlan.disconnect()
+    wlan.active(False)
 
 
-def upvalue(t):
-    global sel_i, t_v1, t_v2, t_v3, btn_up, run
-
-    if not btn_up.value() and not run:
-        print("up button")
-        if sel_i == 1:
-            t_v1 += 60
-            if t_v1 == 1260:
-                t_v1 = 300
-        if sel_i == 2:
-            t_v2 += 60
-            if t_v2 == 1260:
-                t_v2 = 300
-        if sel_i == 3:
-            t_v3 += 60
-            if t_v3 == 1260:
-                t_v3 = 300
-        micropython.schedule(update_display, 0)
-    btn_up.irq(handler=up_debounce)
-
-
-def up_debounce(pin):
-    global btn_up, timer_up
-
-    print("up - debounce")
-    btn_up.irq(handler=None)
-    timer_up.init(mode=Timer.ONE_SHOT, period=100, callback=upvalue)
-
-
-btn_up = Pin(19, Pin.IN, Pin.PULL_UP)
-btn_up.irq(trigger=Pin.IRQ_FALLING, handler=up_debounce)
-#######################################################
-
-while True:
-    utime.sleep_ms(990)  #
-    micropython.schedule(update_display, 0)
-
-    if run:
-        sel_i = 0
-
-        if i == 0:
-            t_next = t_wait
-        if i == (t_wait + 0):
-            v1_pin.value(0)  # open
-            text_v1 = "LINKS  auf"
-            t_next = t_wait + t_v1
-        if i == (t_wait + t_v1):
-            v1_pin.value(1)  # close
-            text_v1 = "LINKS   zu"
-            t_next = (t_wait + t_v1 + t_wait)
-        if i == (t_wait + t_v1 + t_wait):
-            v2_pin.value(0)  # open
-            text_v2 = "MITTE  auf"
-            t_next = (t_wait + t_v1 + t_wait + t_v2)
-        if i == (t_wait + t_v1 + t_wait + t_v2):
-            v2_pin.value(1)  # close
-            text_v2 = "MITTE   zu"
-            t_next = (t_wait + t_v1 + t_wait + t_v2 + t_wait)
-        if i == (t_wait + t_v1 + t_wait + t_v2 + t_wait):
-            v3_pin.value(0)  # open
-            text_v3 = "RECHTS auf"
-            t_next = (t_wait + t_v1 + t_wait + t_v2 + t_wait + t_v3)
-        if i == (t_wait + t_v1 + t_wait + t_v2 + t_wait + t_v3):
-            v3_pin.value(1)  # close
-            text_v3 = "RECHTS  zu"
-            t_next = (t_wait + t_v1 + t_wait + t_v2 + t_wait + t_v3 + t_wait)
-
-        i += 1
-
-        if i == (t_wait + t_v1 + t_wait + t_v2 + t_wait + t_v3 + t_wait):
-            run = False
-            i = 0
-            t_next = 0
-
-    if not run:
-        status = "stop"
-        v1_pin.value(1)  # close
-        v2_pin.value(1)  # close
-        v3_pin.value(1)  # close
-        text_v1 = "LINKS   zu"
-        text_v2 = "MITTE   zu"
-        text_v3 = "RECHTS  zu"
-        i = 0
-        t_next = 0
